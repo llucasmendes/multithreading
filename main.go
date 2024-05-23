@@ -4,84 +4,100 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
+	"io/ioutil"
 	"net/http"
+	"os"
+	"sync"
 	"time"
 )
 
-type MessageReturn struct {
-	Message  string `json:"response-time"`
-	Response string `json:"response"`
+type Address struct {
+	CEP        string `json:"cep"`
+	Logradouro string `json:"logradouro"`
+	Bairro     string `json:"bairro"`
+	Localidade string `json:"localidade"`
+	UF         string `json:"uf"`
 }
 
-type ApiReturn struct {
-	Message string `json:"message"`
-	Body    []byte `json:"response"`
+type APIResult struct {
+	Address Address
+	Source  string
+}
+
+func fetchFromBrasilAPI(cep string, ch chan<- APIResult, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	url := fmt.Sprintf("https://brasilapi.com.br/api/cep/v1/%s", cep)
+	client := http.Client{Timeout: 1 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+
+	var address Address
+	if err := json.Unmarshal(body, &address); err != nil {
+		return
+	}
+
+	ch <- APIResult{Address: address, Source: "BrasilAPI"}
+}
+
+func fetchFromViaCEP(cep string, ch chan<- APIResult, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	url := fmt.Sprintf("http://viacep.com.br/ws/%s/json/", cep)
+	client := http.Client{Timeout: 1 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+
+	var address Address
+	if err := json.Unmarshal(body, &address); err != nil {
+		return
+	}
+
+	ch <- APIResult{Address: address, Source: "ViaCEP"}
 }
 
 func main() {
-
-	cep := flag.String("cep", "", "URL da primeira API")
+	cep := flag.String("cep", "", "O CEP a ser buscado (formato XXXXX-XXX)")
 	flag.Parse()
 
-	urlAPI1 := "https://cdn.apicep.com/file/apicep/" + *cep + ".json"
-	urlAPI2 := "http://viacep.com.br/ws/" + *cep + "/json/"
-	timeout := 1 * time.Second
+	if *cep == "" {
+		fmt.Println("Erro: Você deve fornecer um CEP usando o parâmetro -cep")
+		os.Exit(1)
+	}
 
-	ch := make(chan MessageReturn)
-	ch2 := make(chan MessageReturn)
+	ch := make(chan APIResult, 2)
+	var wg sync.WaitGroup
 
-	go worker(ch, urlAPI1)
-	go worker(ch2, urlAPI2)
+	wg.Add(2)
+	go fetchFromBrasilAPI(*cep, ch, &wg)
+	go fetchFromViaCEP(*cep, ch, &wg)
+
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
 
 	select {
 	case result := <-ch:
-		value, _ := json.Marshal(result)
-		fmt.Println(string(value))
-	case result := <-ch2:
-		value, _ := json.Marshal(result)
-		fmt.Println(string(value))
-	case <-time.After(timeout):
-		fmt.Println("Erro: timeout ao aguardar a resposta.")
-		return
+		fmt.Printf("Resultado da API %s:\n", result.Source)
+		fmt.Printf("CEP: %s\nLogradouro: %s\nBairro: %s\nLocalidade: %s\nUF: %s\n", result.Address.CEP, result.Address.Logradouro, result.Address.Bairro, result.Address.Localidade, result.Address.UF)
+	case <-time.After(1 * time.Second):
+		fmt.Println("Erro: Timeout")
 	}
-
-}
-
-func worker(ch chan<- MessageReturn, url string) {
-
-	apiReturn, err := fetchAPI(url)
-	if err != nil {
-		fmt.Printf("Erro: %v \n", err)
-		return
-	}
-
-	messageReturn := MessageReturn{
-		Message:  apiReturn.Message,
-		Response: string(apiReturn.Body),
-	}
-
-	ch <- messageReturn
-}
-
-func fetchAPI(url string) (ApiReturn, error) {
-	client := http.Client{}
-	startTime := time.Now()
-	resp, err := client.Get(url)
-	if err != nil {
-		return ApiReturn{}, err
-	}
-	defer resp.Body.Close()
-	elapsedTime := time.Since(startTime)
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return ApiReturn{}, err
-	}
-	message := fmt.Sprintf("Tempo de resposta para %s: %s", url, elapsedTime)
-
-	return ApiReturn{
-		message,
-		body,
-	}, nil
 }

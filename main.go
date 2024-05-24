@@ -19,6 +19,14 @@ type Address struct {
 	UF         string `json:"uf"`
 }
 
+type BrasilAPIAddress struct {
+	CEP          string `json:"cep"`
+	Street       string `json:"street"`
+	Neighborhood string `json:"neighborhood"`
+	City         string `json:"city"`
+	State        string `json:"state"`
+}
+
 type APIResult struct {
 	Address Address
 	Source  string
@@ -40,9 +48,17 @@ func fetchFromBrasilAPI(cep string, ch chan<- APIResult, wg *sync.WaitGroup) {
 		return
 	}
 
-	var address Address
-	if err := json.Unmarshal(body, &address); err != nil {
+	var brasilAPIAddress BrasilAPIAddress
+	if err := json.Unmarshal(body, &brasilAPIAddress); err != nil {
 		return
+	}
+
+	address := Address{
+		CEP:        brasilAPIAddress.CEP,
+		Logradouro: brasilAPIAddress.Street,
+		Bairro:     brasilAPIAddress.Neighborhood,
+		Localidade: brasilAPIAddress.City,
+		UF:         brasilAPIAddress.State,
 	}
 
 	ch <- APIResult{Address: address, Source: "BrasilAPI"}
